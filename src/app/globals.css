@@ -1,0 +1,50 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Fallback brand tokens — replaced at runtime by the branding service. */
+  --color-brand-primary: #0e7a6d;
+  --color-brand-secondary: #13315c;
+  --color-brand-accent: #d9a441;
+  --color-brand-background: #f7f5f0;
+  --color-brand-text: #1b2430;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background: var(--color-brand-background);
+  color: var(--color-brand-text);
+}
+
+@layer components {
+  .btn-brand {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 font-semibold text-white transition-opacity hover:opacity-90;
+    background: var(--color-brand-primary);
+    border-radius: var(--brand-radius, 0.5rem);
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 border px-5 py-2.5 font-semibold transition-colors;
+    border-color: var(--color-brand-primary);
+    color: var(--color-brand-primary);
+    border-radius: var(--brand-radius, 0.5rem);
+  }
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-sm;
+  }
+  .input {
+    @apply w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-400;
+  }
+  .label {
+    @apply mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-600;
+  }
+  .th {
+    @apply px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500;
+  }
+  .td {
+    @apply px-3 py-2 align-top text-sm;
+  }
+}

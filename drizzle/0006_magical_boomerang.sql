@@ -1,0 +1,2 @@
+CREATE INDEX IF NOT EXISTS "documents_review_idx" ON "application_documents" USING btree ("review_state","uploaded_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "applications_blocking_idx" ON "visa_applications" USING btree ("agency_id","checklist_complete");

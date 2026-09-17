@@ -1,0 +1,28 @@
+ESSAFARIA VISA OS — READY FOR GITHUB + VERCEL
+
+This package has been adjusted for Vercel + Supabase:
+- Vercel build runs database migrations automatically.
+- POSTGRES_URL / POSTGRES_PRISMA_URL / POSTGRES_URL_NON_POOLING are accepted as database aliases when DATABASE_URL is absent.
+- Vercel uses Supabase Storage automatically when MEDIA_PROVIDER is not explicitly set.
+- Persistent document/media storage is supported through Supabase Storage.
+- Vercel serverless database pool is limited to one connection per warm instance.
+- Production APP_URL can be derived from Vercel URL if APP_URL is not set.
+- Health endpoint reports database mode and storage configuration.
+
+Before first deployment:
+1. Upload the CONTENTS of this folder to GitHub (not the ZIP itself).
+2. Import the repo into Vercel.
+3. In Supabase SQL Editor, run SUPABASE_STORAGE_SETUP.sql.
+4. In Vercel Production environment variables set:
+   - DATABASE_URL = your Supabase pooled PostgreSQL URL (or rely on POSTGRES_URL if the integration already provides it)
+   - ESF_TOKEN_KEY = random secret, 32+ characters
+   - SUPABASE_URL = https://YOUR_PROJECT_REF.supabase.co
+   - SUPABASE_SERVICE_ROLE_KEY = your Supabase service-role key
+   - SUPABASE_STORAGE_BUCKET = essafaria-media
+   - MEDIA_PROVIDER = supabase
+   - SEED_ADMIN_PASSWORD = a strong password for admin@essafaria.local
+   - SEED_AGENCY_PASSWORD = a strong password for owner@saharavoyages.dz
+5. Redeploy.
+6. Open /api/health and confirm status=ok.
+
+Never commit .env or any secret to GitHub.

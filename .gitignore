@@ -1,0 +1,30 @@
+# dependencies
+node_modules/
+
+# builds
+.next/
+out/
+dist/
+
+# local database + media storage (never commit data)
+.data/
+storage/
+media/
+
+# env files — never commit secrets
+.env
+.env.local
+.env.*.local
+
+# testing / coverage
+coverage/
+*.tsbuildinfo
+
+# editors / os
+.DS_Store
+.idea/
+.vscode/
+*.log
+
+# phase handoff bundles (artifacts, not source)
+.handoff/

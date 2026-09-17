@@ -1,0 +1,2 @@
+ALTER TABLE "visa_applications" ADD COLUMN "checklist_complete" boolean DEFAULT false NOT NULL;--> statement-breakpoint
+ALTER TABLE "visa_applications" ADD COLUMN "gate_overridden" boolean DEFAULT false NOT NULL;

@@ -1,0 +1,156 @@
+name: CI
+
+# To activate: cp ci/github-actions/ci.yml .github/workflows/ci.yml   (one commit, by a
+# user whose token may write to .github/workflows — repository automation usually cannot,
+# and GitHub rejects such a push rather than silently skipping the pipeline).
+#
+# Everything the release gate requires, on a real PostgreSQL server rather than only
+# the embedded development database. No job here publishes anything: image builds stay
+# local to the workflow, and deployment remains a manual `docker compose up` (or your
+# platform's release phase) once this pipeline is green.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # the app builds with an empty environment — configuration is a runtime concern here,
+  # never baked into the bundle
+  NEXT_TELEMETRY_DISABLED: "1"
+
+jobs:
+  verify:
+    name: typecheck, lint, tests, build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+      # the release must not carry a committed secret, not even a demo one
+      - run: npm run secrets:scan
+
+  postgres:
+    name: tests + concurrency on PostgreSQL ${{ matrix.pg }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ["16", "18"]
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}-alpine
+        env:
+          # ephemeral, per-run, throwaway: this database dies with the job. Deliberately
+          # not credential-shaped so the repository's own secret scan stays meaningful
+          POSTGRES_USER: essafaria
+          POSTGRES_PASSWORD: cipass
+          POSTGRES_DB: essafaria
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U essafaria -d essafaria"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_MODE: postgres
+      DATABASE_URL: postgresql://essafaria:cipass@localhost:5432/essafaria
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+
+      # every integration test file runs against the server, each in its own database
+      - name: test suite on PostgreSQL
+        run: npm run test:postgres
+
+      - name: ephemeral passwords for this run
+        run: |
+          {
+            echo "CI_ADMIN_PASS=ci-adm-$(openssl rand -hex 8)"
+            echo "CI_AGENCY_PASS=ci-ag-$(openssl rand -hex 8)"
+            echo "CI_PROBE_B_PASS=ci-probe-$(openssl rand -hex 8)"
+          } >> "$GITHUB_ENV"
+
+      - name: migrate + seed
+        env:
+          SEED_ADMIN_PASSWORD: ${{ env.CI_ADMIN_PASS }}
+          SEED_AGENCY_PASSWORD: ${{ env.CI_AGENCY_PASS }}
+        run: |
+          npm run db:migrate
+          npm run db:seed
+          # seeding twice must be a no-op: historical catalogue rows are never overwritten
+          npm run db:seed
+
+      - name: preflight (deploy:check)
+        env:
+          # the preflight is run against the same contract a real deploy has, so it needs
+          # a token key of the right shape — generated here, never committed
+          ESF_TOKEN_KEY: ${{ secrets.CI_ESF_TOKEN_KEY != '' && secrets.CI_ESF_TOKEN_KEY || 'ci-not-secret-0000000000000000000000' }}
+          SEED_ADMIN_PASSWORD: ${{ env.CI_ADMIN_PASS }}
+          SEED_AGENCY_PASSWORD: ${{ env.CI_AGENCY_PASS }}
+        run: npm run deploy:check
+
+      - name: concurrency under real contention
+        run: npm run verify:concurrency
+
+      - name: start server + HTTP verification
+        env:
+          RATE_LIMIT_PER_MINUTE: "600"
+          SEED_ADMIN_PASSWORD: ${{ env.CI_ADMIN_PASS }}
+          SEED_AGENCY_PASSWORD: ${{ env.CI_AGENCY_PASS }}
+          SMOKE_ADMIN_PASSWORD: ${{ env.CI_ADMIN_PASS }}
+          SMOKE_AGENCY_PASSWORD: ${{ env.CI_AGENCY_PASS }}
+          PROBE_ADMIN_PASSWORD: ${{ env.CI_ADMIN_PASS }}
+          PROBE_OWNER_PASSWORD: ${{ env.CI_AGENCY_PASS }}
+          PROBE_TENANT_B_PASSWORD: ${{ env.CI_PROBE_B_PASS }}
+          PROBE_RATE_LIMIT_PER_MINUTE: "600"
+        run: |
+          npm run build
+          nohup npm start > /tmp/server.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:3000/api/health >/dev/null && break
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:3000/api/health | head -c 400
+          npm run smoke:pages
+          npm run probe:seed
+          npm run probe:http
+      - name: server log
+        if: failure()
+        run: tail -n 120 /tmp/server.log
+
+  image:
+    name: build container image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t essafaria-visa-os:ci .
+      - name: compose file is valid
+        run: |
+          cp .env.example .env
+          sed -i \
+            -e 's#^POSTGRES_PASSWORD=.*#POSTGRES_PASSWORD=cipass#' \
+            -e 's#^APP_URL=.*#APP_URL=http://localhost:3000#' \
+            -e 's#^ESF_TOKEN_KEY=.*#ESF_TOKEN_KEY=ci-not-secret-0000000000000000000000#' \
+            .env
+          docker compose config -q

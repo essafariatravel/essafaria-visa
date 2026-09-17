@@ -1,0 +1,132 @@
+# Essafaria Visa OS — single-host deployment (staging or a small production VPS).
+#
+#   1. copy .env.example to .env and fill the three secrets it asks for
+#   2. docker compose up -d --build
+#   3. docker compose logs -f app          # preflight + migrations + server
+#   4. seed a fresh staging database:
+#        docker compose --profile tools run --rm seed
+#
+# Notes that matter for this app specifically:
+#   • the app is one process; the scheduler ticks in-process, so `up --scale app=2`
+#     would give you two schedulers. That is safe (the outbox claim is atomic and the
+#     catalogue cache is only advisory), but run background jobs from ONE replica and
+#     expose the HTTP app from more if you ever need to.
+#   • media uploads live in the named volume below, not in the image — document bytes
+#     are never stored in PostgreSQL.
+#   • there is no online payment gateway by design: wallets are funded by staff, so
+#     nothing here talks to a card processor.
+
+name: essafaria
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-essafaria}
+      POSTGRES_USER: ${POSTGRES_USER:-essafaria}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # deterministic collation for the text columns the app sorts on
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=''
+      - -c
+      - max_connections=100
+      - -c
+      - log_min_duration_statement=1000
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-essafaria} -d ${POSTGRES_DB:-essafaria}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    ports:
+      # not published by default; uncomment to reach the DB from the host during setup
+      # - "127.0.0.1:5432:5432"
+      []
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # --- database -------------------------------------------------------------
+      DATABASE_URL: postgresql://${POSTGRES_USER:-essafaria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-essafaria}
+      # --- app ------------------------------------------------------------------
+      APP_URL: ${APP_URL:?public origin, e.g. https://visa.example.com}
+      PORT: 3000
+      # seals Gmail refresh tokens and other stored credentials (base64 of 32 bytes:
+      # `openssl rand -base64 32`). Losing it means every connected mailbox has to be
+      # re-authorised, so keep it in the secret store and back it up.
+      ESF_TOKEN_KEY: ${ESF_TOKEN_KEY:?openssl rand -base64 32}
+      GMAIL_TOKEN_KEY_REF: ESF_TOKEN_KEY
+      NODE_ENV: production
+      # --- transport / proxy: string booleans, "1"/"0" is rejected --------------
+      REQUIRE_HTTPS: ${REQUIRE_HTTPS:-true}
+      TRUST_PROXY_HEADERS: ${TRUST_PROXY_HEADERS:-true}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-240}
+      LOGIN_MAX_ATTEMPTS: ${LOGIN_MAX_ATTEMPTS:-8}
+      LOGIN_WINDOW_MINUTES: ${LOGIN_WINDOW_MINUTES:-15}
+      # --- storage --------------------------------------------------------------
+      # mounted volume: document bytes are never stored in PostgreSQL
+      MEDIA_ROOT: /app/media
+      MEDIA_PROVIDER: local
+      # --- outbound email -------------------------------------------------------
+      # none | file | log | smtp. Both "file" and "log" write .eml files under
+      # MEDIA_ROOT/outbox and send nothing — the honest default until an SMTP client
+      # dependency is installed and configured (DEPLOYMENT.md §4).
+      EMAIL_TRANSPORT: ${EMAIL_TRANSPORT:-log}
+      SMTP_URL: ${SMTP_URL:-}
+      SENDGRID_API_KEY: ${SENDGRID_API_KEY:-}
+      # --- AI assistant (advisory only; "rules" makes no external calls) --------
+      AI_PROVIDER: ${AI_PROVIDER:-rules}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_API_KEY_REF: ${AI_API_KEY_REF:-}
+      # --- Gmail intake ---------------------------------------------------------
+      GMAIL_ENABLED: ${GMAIL_ENABLED:-false}
+      GMAIL_PROVIDER: ${GMAIL_PROVIDER:-fixture}
+      GMAIL_CLIENT_ID_REF: ${GMAIL_CLIENT_ID_REF:-}
+      GMAIL_CLIENT_SECRET_REF: ${GMAIL_CLIENT_SECRET_REF:-}
+      GMAIL_REDIRECT_URI: ${GMAIL_REDIRECT_URI:-}
+      GMAIL_POLL_QUERY: ${GMAIL_POLL_QUERY:-is:unread}
+      # --- container behaviour --------------------------------------------------
+      # the entrypoint preflights and migrates on every boot; both are idempotent.
+      # Set RUN_MIGRATIONS=0 if your platform has a dedicated release phase instead.
+      RUN_DEPLOY_CHECK: ${RUN_DEPLOY_CHECK:-1}
+      RUN_MIGRATIONS: ${RUN_MIGRATIONS:-1}
+      # loads the configurable catalogue + demo accounts into an EMPTY database only
+      RUN_SEED: ${RUN_SEED:-0}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      SEED_AGENCY_PASSWORD: ${SEED_AGENCY_PASSWORD:-}
+    volumes:
+      - media:/app/media
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+
+  seed:
+    profiles: ["tools"]
+    build: .
+    entrypoint: ["node_modules/.bin/tsx", "scripts/seed.ts"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-essafaria}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-essafaria}?sslmode=${PGSSLMODE:-disable}
+      SEED_ADMIN_PASSWORD: ${SEED_ADMIN_PASSWORD:-}
+      SEED_AGENCY_PASSWORD: ${SEED_AGENCY_PASSWORD:-}
+
+volumes:
+  pgdata:
+  media:
